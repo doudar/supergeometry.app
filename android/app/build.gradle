@@ -1,0 +1,49 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'app.supergeometry.shell'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'app.supergeometry.shell'
+        minSdk 26
+        targetSdk 35
+        versionCode providers.gradleProperty('appVersionCode').map { it.toInteger() }.getOrElse(1)
+        versionName providers.gradleProperty('appVersion').getOrElse(
+            new groovy.json.JsonSlurper().parse(rootProject.file('../package.json')).version.toString()
+        )
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/webAssets'))
+    sourceSets.main.res.srcDir(layout.buildDirectory.dir('generated/nativeResources'))
+}
+
+dependencies { implementation 'androidx.webkit:webkit:1.12.1' }
+
+def webDist = rootProject.file('../dist')
+def validateWeb = tasks.register('validateWeb') {
+    doLast {
+        if (!new File(webDist, 'index.html').isFile() || fileTree(webDist).matching { include '**/*.wasm' }.isEmpty()) {
+            throw new GradleException('Build the web app first (npm ci && npm run build).')
+        }
+    }
+}
+def stageWeb = tasks.register('stageWeb', Sync) {
+    dependsOn validateWeb
+    from(webDist) {
+        exclude 'sw.js', '_headers'
+        into 'web'
+    }
+    from(rootProject.file('../LICENSE'))
+    into layout.buildDirectory.dir('generated/webAssets')
+}
+def stageIcon = tasks.register('stageIcon', Sync) {
+    from(rootProject.file('../public/icon-192.png')) {
+        rename { 'app_icon.png' }
+        into 'drawable-nodpi'
+    }
+    into layout.buildDirectory.dir('generated/nativeResources')
+}
+tasks.named('preBuild') { dependsOn stageWeb, stageIcon }

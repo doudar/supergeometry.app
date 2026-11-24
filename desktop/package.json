@@ -1,0 +1,55 @@
+{
+  "name": "supergeometry-desktop",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Standalone desktop app for superGeometry",
+  "license": "AGPL-3.0-or-later",
+  "author": "superGeometry contributors",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "package": "node package.cjs",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "electron": "42.11.18",
+    "electron-builder": "26.18.1"
+  },
+  "build": {
+    "appId": "app.supergeometry.desktop",
+    "productName": "superGeometry",
+    "artifactName": "superGeometry-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "local-origin.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist",
+        "to": "web",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE"
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.graphics-design",
+      "icon": "../public/icon-512.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "../public/icon-512.png"
+    }
+  }
+}

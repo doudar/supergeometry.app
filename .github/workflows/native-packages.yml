@@ -1,0 +1,211 @@
+name: Native packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/native-packages.yml'
+      - 'android/**'
+      - 'desktop/**'
+      - 'scripts/native-release.mjs'
+      - 'public/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'package*.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - 'index.html'
+  push:
+    branches: ['native-packaging', 'native-release-preview']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub prerelease from the default branch
+        type: boolean
+        default: false
+      bump:
+        description: Native version increment (only used when publishing)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-packages-${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'publish' || github.ref == 'refs/heads/native-release-preview' && 'publish' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      android_code: ${{ steps.version.outputs.android_code }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - run: node --test tests/native-release.test.mjs
+      - id: version
+        env:
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+          FORK_PREVIEW: ${{ github.event_name == 'push' && github.event.repository.fork && github.ref == 'refs/heads/native-release-preview' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" || {
+              echo "::error::Publishing requires the repository's default branch"
+              exit 1
+            }
+            node scripts/native-release.mjs "$BUMP"
+          elif [ "$FORK_PREVIEW" = true ]; then
+            node scripts/native-release.mjs patch
+          else
+            node scripts/native-release.mjs preview
+          fi
+
+  desktop:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            name: windows-x64
+            args: --win --x64
+            extension: exe
+          - runner: macos-15
+            name: macos-arm64
+            args: --mac --arm64
+            extension: dmg
+          - runner: macos-15-intel
+            name: macos-x64
+            args: --mac --x64
+            extension: dmg
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run build
+      - run: npm ci --prefix desktop
+      - run: npm test --prefix desktop
+      - env:
+          SG_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run --prefix desktop package -- ${{ matrix.args }}
+      - name: Verify macOS preview signature
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find desktop/release -type d -name 'superGeometry.app' -prune -print)
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -F Signature=adhoc
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-${{ matrix.name }}
+          path: desktop/release/*.${{ matrix.extension }}
+          if-no-files-found: error
+
+  android:
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2 # v5
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+      - run: npm ci
+      - run: npm run build
+      - run: node --test android/test-export.cjs
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          ANDROID_CODE: ${{ needs.plan.outputs.android_code }}
+        run: |
+          gradle -p android assembleDebug "-PappVersion=$VERSION" "-PappVersionCode=$ANDROID_CODE"
+          "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p native-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk "native-output/superGeometry-android-$VERSION-debug.apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-android
+          path: native-output/*.apk
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, desktop, android]
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      || (github.event_name == 'push' && github.event.repository.fork && github.ref == 'refs/heads/native-release-preview')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: native-*
+          path: release-assets
+      - name: Verify package matrix and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release
+          for pair in windows-x64:exe macos-arm64:dmg macos-x64:dmg android:apk; do
+            platform=${pair%:*}; extension=${pair#*:}
+            shopt -s nullglob
+            files=(release-assets/native-"$platform"/*."$extension")
+            if (( ${#files[@]} != 1 )) || [[ ! -s "${files[0]:-}" ]]; then
+              echo "::error::Expected exactly one non-empty $extension for $platform"
+              exit 1
+            fi
+            cp "${files[0]}" "release/superGeometry-$platform.$extension"
+          done
+          (cd release && sha256sum *.exe *.dmg *.apk > SHA256SUMS.txt)
+      - name: Create tagged GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" > /tmp/native-tag.json; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" > /tmp/native-tag.json
+          fi
+          [[ "$(jq -r '.object.type + ":" + .object.sha' /tmp/native-tag.json)" == "commit:$GITHUB_SHA" ]] || {
+            echo "::error::Tag $TAG already exists and does not point directly to this commit"
+            exit 1
+          }
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > /tmp/native-release.json; then
+            if [[ "$(jq -r .isDraft /tmp/native-release.json)" != true ]]; then
+              echo "Release $TAG is already published; leaving it unchanged."
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease \
+              --title "superGeometry native preview $TAG" \
+              --notes "Windows x64 and macOS arm64/x64 use Electron. Android is a debug-signed sideload preview; updates may require uninstalling the previous preview. Desktop packages are not vendor-signed or notarized. These builds are not app-store releases."
+          fi
+          gh release upload "$TAG" release/* --clobber --repo "$GITHUB_REPOSITORY"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

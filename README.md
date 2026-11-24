@@ -575,3 +575,5 @@ no UI framework. Project autosave in IndexedDB.
 AGPL-3.0-or-later: anyone can use, study, change and host it, but modified
 versions offered to the public must stay open source. OpenCascade (via
 `replicad-opencascadejs`) is LGPL-2.1; replicad and three.js are MIT.
+
+For desktop and Android previews, see [native packages](docs/NATIVE_PACKAGES.md).
