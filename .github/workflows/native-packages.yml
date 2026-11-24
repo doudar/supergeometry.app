@@ -140,7 +140,26 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node --test android/test-export.cjs
-      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Verify Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [[ ! -f "$sdk/platforms/android-35/android.jar" || ! -x "$sdk/build-tools/35.0.0/apksigner" ]]; then
+            # The hosted SDK tools are not necessarily on PATH.
+            manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+            if [[ ! -x "$manager" ]]; then
+              manager=$(command -v sdkmanager || true)
+            fi
+            if [[ -z "$manager" ]]; then
+              echo "::error::Android SDK packages are missing and sdkmanager could not be found in $sdk"
+              exit 1
+            fi
+            "$manager" --sdk_root="$sdk" "platforms;android-35" "build-tools;35.0.0"
+          fi
+          test -f "$sdk/platforms/android-35/android.jar"
+          test -x "$sdk/build-tools/35.0.0/apksigner"
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
       - env:
           VERSION: ${{ needs.plan.outputs.version }}
           ANDROID_CODE: ${{ needs.plan.outputs.android_code }}
